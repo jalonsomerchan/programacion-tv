@@ -15,6 +15,7 @@ permissions:
 
 env:
   EPG_URL: https://www.open-epg.com/files/spain4.xml.gz
+  DEPLOYED_GUIDE_URL: https://jalonsomerchan.github.io/programacion-tv/data/guide.json
 
 concurrency:
   group: pages
@@ -37,6 +38,8 @@ jobs:
         run: npm ci
 
       - name: Download Spain EPG
+        id: epg
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p public/data
@@ -50,7 +53,31 @@ jobs:
           rm /tmp/spain4.xml.gz
 
       - name: Build guide JSON
+        if: steps.epg.outcome == 'success'
         run: npm run build:guide
+
+      - name: Use deployed guide fallback
+        if: steps.epg.outcome != 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p public/data
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output public/data/guide.json \
+            "$DEPLOYED_GUIDE_URL"
+          node - <<'NODE'
+          const fs = require('node:fs')
+          const path = 'public/data/guide.json'
+          const guide = JSON.parse(fs.readFileSync(path, 'utf-8'))
+          if (!guide.channels?.length || !guide.programmes?.length) {
+            throw new Error('La guía fallback no contiene canales o programas válidos.')
+          }
+          guide.metadata = {
+            ...(guide.metadata || {}),
+            generatedAt: guide.metadata?.generatedAt || new Date().toISOString(),
+            fallbackUsed: true,
+          }
+          fs.writeFileSync(path, `${JSON.stringify(guide)}\n`)
+          NODE
 
       - name: Check project
         run: npm run check
