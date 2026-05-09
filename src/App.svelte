@@ -1,8 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
 
-  const EPG_XML_URL = 'https://www.open-epg.com/files/spain4.xml'
-  const EPG_GZIP_URL = 'https://www.open-epg.com/files/spain4.xml.gz'
+  const EPG_LOCAL_URL = `${import.meta.env.BASE_URL}data/spain4.xml`
   const SETTINGS_KEY = 'programacion-tv-channel-order-v1'
   const THEME_KEY = 'programacion-tv-theme'
 
@@ -135,27 +134,15 @@
   }
 
   async function fetchXmlText() {
-    try {
-      const response = await fetch(EPG_XML_URL, { cache: 'no-store' })
+    const response = await fetch(EPG_LOCAL_URL, { cache: 'no-store' })
 
-      if (!response.ok) {
-        throw new Error(`La fuente ha respondido con estado ${response.status}`)
-      }
-
-      return await response.text()
-    } catch (xmlError) {
-      const response = await fetch(EPG_GZIP_URL, { cache: 'no-store' })
-
-      if (!response.ok || !response.body || !('DecompressionStream' in window)) {
-        throw xmlError instanceof Error
-          ? xmlError
-          : new Error('No se ha podido leer el XML de programación.')
-      }
-
-      const DecompressionStreamCtor = (window as unknown as { DecompressionStream: typeof DecompressionStream }).DecompressionStream
-      const decompressedStream = response.body.pipeThrough(new DecompressionStreamCtor('gzip'))
-      return await new Response(decompressedStream).text()
+    if (!response.ok) {
+      throw new Error(
+        'No se ha encontrado la guía local. Vuelve a ejecutar el despliegue para descargar la programación desde Open-EPG.',
+      )
     }
+
+    return await response.text()
   }
 
   function parseXmlTv(xmlText: string) {
@@ -491,7 +478,7 @@
       <section class="alert alert-danger" role="alert">
         <h2>No se ha podido cargar la programación</h2>
         <p>{errorMessage}</p>
-        <p>Prueba de nuevo en unos segundos. La guía depende de la fuente externa Open-EPG.</p>
+        <p>La web usa una copia local de Open-EPG para evitar errores de CORS. Ejecuta de nuevo el workflow de despliegue o de actualización de la guía.</p>
       </section>
     {/if}
 
