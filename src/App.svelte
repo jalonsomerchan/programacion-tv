@@ -74,8 +74,8 @@
   let programmes: Programme[] = []
   let visibleChannelIds: string[] = []
   let hiddenChannelIds: string[] = []
-  let expandedChannelIds: string[] = []
   let channelSearch = ''
+  let searchQuery = ''
   let now = new Date()
   let lastUpdated: Date | null = null
   let loading = true
@@ -89,11 +89,9 @@
     .map((channelId) => channelMap.get(channelId))
     .filter((channel): channel is Channel => Boolean(channel))
   $: rows = buildRows(visibleChannels, programmesByChannel, now)
+  $: displayedRows = filterRows(rows, searchQuery)
   $: filteredChannels = getFilteredChannels(channels, channelSearch)
   $: selectedCount = visibleChannelIds.length
-  $: sourceSummary = programmes.length
-    ? `${programmes.length.toLocaleString('es-ES')} programas · ${channels.length.toLocaleString('es-ES')} canales`
-    : 'Cargando la guía'
 
   onMount(() => {
     setupTheme()
@@ -323,6 +321,18 @@
     })
   }
 
+  function filterRows(items: ChannelRow[], query: string) {
+    const normalizedQuery = normalize(query)
+    if (!normalizedQuery) return items
+
+    return items.filter((row) => {
+      return (
+        row.channel.normalized.includes(normalizedQuery) ||
+        row.schedule.some((programme) => normalize(`${programme.title} ${programme.description}`).includes(normalizedQuery))
+      )
+    })
+  }
+
   function getFilteredChannels(channelList: Channel[], search: string) {
     const normalizedSearch = normalize(search)
 
@@ -348,7 +358,6 @@
       visibleChannelIds.filter((id) => id !== channelId),
       [...hiddenChannelIds.filter((id) => id !== channelId), channelId],
     )
-    expandedChannelIds = expandedChannelIds.filter((id) => id !== channelId)
   }
 
   function toggleChannelVisibility(channelId: string) {
@@ -374,7 +383,6 @@
   function resetChannels() {
     const defaultIds = getDefaultChannelIds(channels)
     saveSettings(defaultIds, channels.map((channel) => channel.id).filter((id) => !defaultIds.includes(id)))
-    expandedChannelIds = []
     channelSearch = ''
   }
 
@@ -388,16 +396,6 @@
     const firstDefault = defaultIds[0] || channels[0]?.id
     if (!firstDefault) return
     saveSettings([firstDefault], channels.map((channel) => channel.id).filter((id) => id !== firstDefault))
-  }
-
-  function toggleExpanded(channelId: string) {
-    expandedChannelIds = expandedChannelIds.includes(channelId)
-      ? expandedChannelIds.filter((id) => id !== channelId)
-      : [...expandedChannelIds, channelId]
-  }
-
-  function isExpanded(channelId: string) {
-    return expandedChannelIds.includes(channelId)
   }
 
   function isCurrent(programme: Programme) {
@@ -474,13 +472,19 @@
         <span class="status-dot" class:loading-dot={loading}></span>
         <div>
           <strong>Ahora son las {formatTime(now)}</strong>
-          <span>{lastUpdated ? `Actualizado: ${formatTime(lastUpdated)} · ${sourceSummary}` : sourceSummary}</span>
+          <span>{lastUpdated ? `Actualizado: ${formatTime(lastUpdated)}` : 'Cargando la guía'}</span>
         </div>
       </div>
 
-      <button class="btn btn-primary" type="button" on:click={loadEpg} disabled={loading}>
-        {loading ? 'Actualizando...' : 'Actualizar guía'}
-      </button>
+      <div class="control-actions">
+        <label class="minimal-search" for="guide-search">
+          <span class="sr-only">Buscar en la guía</span>
+          <input id="guide-search" type="search" bind:value={searchQuery} placeholder="Buscar" />
+        </label>
+        <button class="btn btn-primary" type="button" on:click={loadEpg} disabled={loading}>
+          {loading ? 'Actualizando...' : 'Actualizar'}
+        </button>
+      </div>
     </section>
 
     {#if settingsOpen}
@@ -582,16 +586,21 @@
           <div class="skeleton-card"></div>
         {/each}
       </section>
+    {:else if displayedRows.length === 0}
+      <section class="empty-results card">
+        <strong>No hay resultados</strong>
+        <p>Prueba con otro canal o con el nombre de un programa.</p>
+      </section>
     {:else}
       <section class="channel-list" aria-label="Programación completa por cadenas">
-        {#each rows as row (row.channel.id)}
-          <article class="channel-card card" class:is-open={isExpanded(row.channel.id)}>
-            <button class="channel-summary" type="button" on:click={() => toggleExpanded(row.channel.id)} aria-expanded={isExpanded(row.channel.id)}>
+        {#each displayedRows as row (row.channel.id)}
+          <details class="channel-card card">
+            <summary class="channel-summary">
               <span class="channel-title-block">
                 <span class="channel-logo" aria-hidden="true">{row.channel.name.slice(0, 2).toUpperCase()}</span>
                 <span>
                   <strong>{row.channel.name}</strong>
-                  <small>{row.schedule.length} programas en la guía</small>
+                  <small>Ahora: {row.current?.title || 'Sin datos ahora'}</small>
                 </span>
               </span>
 
@@ -606,49 +615,50 @@
                 </span>
               </span>
 
-              <span class="expand-indicator" aria-hidden="true">{isExpanded(row.channel.id) ? '−' : '+'}</span>
-            </button>
+              <span class="expand-indicator" aria-hidden="true"></span>
+            </summary>
 
             {#if row.current}
               <div class="current-strip">
-                <span>{formatTime(row.current.start)} - {formatTime(row.current.stop)}</span>
+                <div>
+                  <strong>En emisión</strong>
+                  <span>{formatTime(row.current.start)} - {formatTime(row.current.stop)}</span>
+                </div>
                 <div class="progress" aria-label={`Progreso aproximado del programa: ${getProgress(row.current)}%`}>
                   <span style={`width: ${getProgress(row.current)}%`}></span>
                 </div>
               </div>
             {/if}
 
-            {#if isExpanded(row.channel.id)}
-              <div class="full-schedule">
-                {#if row.schedule.length}
-                  <ol class="programme-list">
-                    {#each row.schedule as programme (programme.channelId + programme.startMs)}
-                      <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
-                        <time datetime={programme.start.toISOString()}>{formatTime(programme.start)}</time>
-                        <div class="programme-detail">
-                          <div class="programme-heading">
-                            <h2>{programme.title}</h2>
-                            <span>{formatTime(programme.start)} - {formatTime(programme.stop)} · {formatDuration(programme)}</span>
-                          </div>
-                          {#if programme.description}
-                            <p>{programme.description}</p>
-                          {/if}
-                          {#if isCurrent(programme)}
-                            <span class="badge live-badge">En emisión ahora</span>
-                          {/if}
+            <div class="full-schedule">
+              {#if row.schedule.length}
+                <ol class="programme-list">
+                  {#each row.schedule as programme (programme.channelId + programme.startMs)}
+                    <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
+                      <time datetime={programme.start.toISOString()}>{formatTime(programme.start)}</time>
+                      <div class="programme-detail">
+                        <div class="programme-heading">
+                          <h2>{programme.title}</h2>
+                          <span>{formatTime(programme.start)} - {formatTime(programme.stop)} · {formatDuration(programme)}</span>
                         </div>
-                      </li>
-                    {/each}
-                  </ol>
-                {:else}
-                  <div class="empty-schedule">
-                    <strong>No hay programación para este canal.</strong>
-                    <p>La fuente EPG no incluye emisiones para esta cadena en la guía cargada.</p>
-                  </div>
-                {/if}
-              </div>
-            {/if}
-          </article>
+                        {#if programme.description}
+                          <p>{programme.description}</p>
+                        {/if}
+                        {#if isCurrent(programme)}
+                          <span class="badge live-badge">En emisión ahora</span>
+                        {/if}
+                      </div>
+                    </li>
+                  {/each}
+                </ol>
+              {:else}
+                <div class="empty-schedule">
+                  <strong>No hay programación para este canal.</strong>
+                  <p>La fuente EPG no incluye emisiones para esta cadena en la guía cargada.</p>
+                </div>
+              {/if}
+            </div>
+          </details>
         {/each}
       </section>
     {/if}
