@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
 
   const EPG_LOCAL_URL = `${import.meta.env.BASE_URL}data/spain4.xml`
-  const SETTINGS_KEY = 'programacion-tv-channel-order-v1'
+  const SETTINGS_KEY = 'programacion-tv-channel-order-v2'
+  const OLD_SETTINGS_KEY = 'programacion-tv-channel-order-v1'
   const THEME_KEY = 'programacion-tv-theme'
 
   type Theme = 'light' | 'dark'
@@ -23,10 +24,16 @@
     stopMs: number
   }
 
+  type ChannelSettings = {
+    visibleIds: string[]
+    hiddenIds: string[]
+  }
+
   type ChannelRow = {
     channel: Channel
     current?: Programme
     next?: Programme
+    schedule: Programme[]
   }
 
   type DefaultChannel = {
@@ -65,9 +72,10 @@
 
   let channels: Channel[] = []
   let programmes: Programme[] = []
-  let selectedChannelIds: string[] = []
+  let visibleChannelIds: string[] = []
+  let hiddenChannelIds: string[] = []
+  let expandedChannelIds: string[] = []
   let channelSearch = ''
-  let rows: ChannelRow[] = []
   let now = new Date()
   let lastUpdated: Date | null = null
   let loading = true
@@ -77,14 +85,15 @@
 
   $: channelMap = new Map(channels.map((channel) => [channel.id, channel]))
   $: programmesByChannel = groupProgrammes(programmes)
-  $: visibleChannels = selectedChannelIds
+  $: visibleChannels = visibleChannelIds
     .map((channelId) => channelMap.get(channelId))
     .filter((channel): channel is Channel => Boolean(channel))
   $: rows = buildRows(visibleChannels, programmesByChannel, now)
   $: filteredChannels = getFilteredChannels(channels, channelSearch)
+  $: selectedCount = visibleChannelIds.length
   $: sourceSummary = programmes.length
-    ? `${programmes.length.toLocaleString('es-ES')} programas cargados de ${channels.length.toLocaleString('es-ES')} canales`
-    : 'Cargando la guía de programación'
+    ? `${programmes.length.toLocaleString('es-ES')} programas · ${channels.length.toLocaleString('es-ES')} canales`
+    : 'Cargando la guía'
 
   onMount(() => {
     setupTheme()
@@ -188,9 +197,12 @@
       .filter((programme): programme is Programme => Boolean(programme))
       .sort((a, b) => a.startMs - b.startMs)
 
+    const initialSettings = getInitialSettings(parsedChannels)
+
     channels = parsedChannels
     programmes = parsedProgrammes
-    selectedChannelIds = getInitialChannelOrder(parsedChannels)
+    visibleChannelIds = initialSettings.visibleIds
+    hiddenChannelIds = initialSettings.hiddenIds
   }
 
   function parseXmlTvDate(value: string | null) {
@@ -220,23 +232,54 @@
     return name.replace(/\.es$/i, '').trim()
   }
 
-  function getInitialChannelOrder(parsedChannels: Channel[]) {
+  function getInitialSettings(parsedChannels: Channel[]): ChannelSettings {
     const stored = window.localStorage.getItem(SETTINGS_KEY)
 
     if (stored) {
       try {
-        const storedIds = JSON.parse(stored) as string[]
-        const validStoredIds = storedIds.filter((id) => parsedChannels.some((channel) => channel.id === id))
-
-        if (validStoredIds.length > 0) {
-          return validStoredIds
-        }
+        return sanitizeSettings(JSON.parse(stored) as Partial<ChannelSettings>, parsedChannels)
       } catch {
         window.localStorage.removeItem(SETTINGS_KEY)
       }
     }
 
-    return getDefaultChannelIds(parsedChannels)
+    const oldStored = window.localStorage.getItem(OLD_SETTINGS_KEY)
+    if (oldStored) {
+      try {
+        const oldIds = JSON.parse(oldStored) as string[]
+        return sanitizeSettings({ visibleIds: oldIds, hiddenIds: [] }, parsedChannels)
+      } catch {
+        window.localStorage.removeItem(OLD_SETTINGS_KEY)
+      }
+    }
+
+    const visibleIds = getDefaultChannelIds(parsedChannels)
+    const hiddenIds = parsedChannels.map((channel) => channel.id).filter((id) => !visibleIds.includes(id))
+    return { visibleIds, hiddenIds }
+  }
+
+  function sanitizeSettings(settings: Partial<ChannelSettings>, parsedChannels: Channel[]): ChannelSettings {
+    const validIds = parsedChannels.map((channel) => channel.id)
+    const visibleIds = uniqueIds(settings.visibleIds || [], validIds)
+    const hiddenIds = uniqueIds(settings.hiddenIds || [], validIds).filter((id) => !visibleIds.includes(id))
+    const missingIds = validIds.filter((id) => !visibleIds.includes(id) && !hiddenIds.includes(id))
+
+    if (visibleIds.length === 0) {
+      const defaultIds = getDefaultChannelIds(parsedChannels)
+      return {
+        visibleIds: defaultIds,
+        hiddenIds: validIds.filter((id) => !defaultIds.includes(id)),
+      }
+    }
+
+    return {
+      visibleIds,
+      hiddenIds: [...hiddenIds, ...missingIds],
+    }
+  }
+
+  function uniqueIds(ids: string[], validIds: string[]) {
+    return Array.from(new Set(ids)).filter((id) => validIds.includes(id))
   }
 
   function getDefaultChannelIds(parsedChannels: Channel[]) {
@@ -272,11 +315,11 @@
     const currentTime = currentDate.getTime()
 
     return selectedChannels.map((channel) => {
-      const channelProgrammes = groups.get(channel.id) || []
-      const current = channelProgrammes.find((programme) => programme.startMs <= currentTime && programme.stopMs > currentTime)
-      const next = channelProgrammes.find((programme) => programme.startMs > currentTime)
+      const schedule = groups.get(channel.id) || []
+      const current = schedule.find((programme) => programme.startMs <= currentTime && programme.stopMs > currentTime)
+      const next = schedule.find((programme) => programme.startMs > currentTime)
 
-      return { channel, current, next }
+      return { channel, current, next, schedule }
     })
   }
 
@@ -288,38 +331,82 @@
       .sort((a, b) => a.name.localeCompare(b.name, 'es'))
   }
 
-  function saveChannelOrder(ids = selectedChannelIds) {
-    selectedChannelIds = [...ids]
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(selectedChannelIds))
+  function saveSettings(nextVisibleIds = visibleChannelIds, nextHiddenIds = hiddenChannelIds) {
+    visibleChannelIds = [...nextVisibleIds]
+    hiddenChannelIds = [...nextHiddenIds]
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({ visibleIds: visibleChannelIds, hiddenIds: hiddenChannelIds }))
   }
 
-  function toggleChannel(channelId: string, checked: boolean) {
-    if (checked) {
-      if (!selectedChannelIds.includes(channelId)) {
-        saveChannelOrder([...selectedChannelIds, channelId])
-      }
-      return
-    }
+  function showChannel(channelId: string) {
+    if (visibleChannelIds.includes(channelId)) return
+    saveSettings([...visibleChannelIds, channelId], hiddenChannelIds.filter((id) => id !== channelId))
+  }
 
-    saveChannelOrder(selectedChannelIds.filter((id) => id !== channelId))
+  function hideChannel(channelId: string) {
+    if (!visibleChannelIds.includes(channelId)) return
+    saveSettings(
+      visibleChannelIds.filter((id) => id !== channelId),
+      [...hiddenChannelIds.filter((id) => id !== channelId), channelId],
+    )
+    expandedChannelIds = expandedChannelIds.filter((id) => id !== channelId)
+  }
+
+  function toggleChannelVisibility(channelId: string) {
+    if (visibleChannelIds.includes(channelId)) {
+      hideChannel(channelId)
+    } else {
+      showChannel(channelId)
+    }
   }
 
   function moveChannel(channelId: string, direction: -1 | 1) {
-    const index = selectedChannelIds.indexOf(channelId)
+    const index = visibleChannelIds.indexOf(channelId)
     const targetIndex = index + direction
 
-    if (index === -1 || targetIndex < 0 || targetIndex >= selectedChannelIds.length) return
+    if (index === -1 || targetIndex < 0 || targetIndex >= visibleChannelIds.length) return
 
-    const newOrder = [...selectedChannelIds]
+    const newOrder = [...visibleChannelIds]
     const [removed] = newOrder.splice(index, 1)
     newOrder.splice(targetIndex, 0, removed)
-    saveChannelOrder(newOrder)
+    saveSettings(newOrder, hiddenChannelIds)
   }
 
   function resetChannels() {
     const defaultIds = getDefaultChannelIds(channels)
-    saveChannelOrder(defaultIds)
+    saveSettings(defaultIds, channels.map((channel) => channel.id).filter((id) => !defaultIds.includes(id)))
+    expandedChannelIds = []
     channelSearch = ''
+  }
+
+  function showAllChannels() {
+    const allIds = channels.map((channel) => channel.id)
+    saveSettings(allIds, [])
+  }
+
+  function hideAllChannels() {
+    const defaultIds = getDefaultChannelIds(channels)
+    const firstDefault = defaultIds[0] || channels[0]?.id
+    if (!firstDefault) return
+    saveSettings([firstDefault], channels.map((channel) => channel.id).filter((id) => id !== firstDefault))
+  }
+
+  function toggleExpanded(channelId: string) {
+    expandedChannelIds = expandedChannelIds.includes(channelId)
+      ? expandedChannelIds.filter((id) => id !== channelId)
+      : [...expandedChannelIds, channelId]
+  }
+
+  function isExpanded(channelId: string) {
+    return expandedChannelIds.includes(channelId)
+  }
+
+  function isCurrent(programme: Programme) {
+    const currentTime = now.getTime()
+    return programme.startMs <= currentTime && programme.stopMs > currentTime
+  }
+
+  function isPast(programme: Programme) {
+    return programme.stopMs <= now.getTime()
   }
 
   function formatTime(date: Date) {
@@ -353,7 +440,7 @@
 <svelte:head>
   <meta
     name="description"
-    content="Consulta la programación de la televisión en España: qué están emitiendo ahora y qué programa viene después en cada cadena."
+    content="Consulta la programación completa de la televisión en España por cadenas, con lo que se emite ahora y todos los programas del día."
   />
 </svelte:head>
 
@@ -366,60 +453,63 @@
         <span class="brand-mark" aria-hidden="true">TV</span>
         <span>
           <strong>Programación TV</strong>
-          <small>España</small>
+          <small>{formatDate(now)}</small>
         </span>
       </a>
 
       <div class="topbar-actions">
         <button class="btn btn-secondary" type="button" on:click={() => (settingsOpen = !settingsOpen)} aria-expanded={settingsOpen}>
-          Canales
+          Canales ({selectedCount})
         </button>
         <button class="btn btn-ghost" type="button" on:click={toggleTheme}>
-          {theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          {theme === 'dark' ? 'Claro' : 'Oscuro'}
         </button>
       </div>
     </nav>
   </header>
 
   <main id="programacion">
-    <section class="hero-section" aria-labelledby="page-title">
-      <div class="hero-content">
-        <p class="eyebrow">Guía de televisión en directo</p>
-        <h1 id="page-title">Qué están echando ahora en la tele</h1>
-        <p class="hero-text">
-          Consulta de un vistazo el programa actual y el siguiente en las principales cadenas de España. Texto grande, orden claro y pensado para móvil.
-        </p>
-      </div>
-
-      <aside class="status-card" aria-label="Estado de la programación">
+    <section class="control-bar" aria-label="Estado de la guía">
+      <div class="now-block">
         <span class="status-dot" class:loading-dot={loading}></span>
         <div>
-          <strong>{loading ? 'Cargando programación' : 'Programación actualizada'}</strong>
-          <p>{lastUpdated ? `Última consulta: ${formatTime(lastUpdated)}` : sourceSummary}</p>
+          <strong>Ahora son las {formatTime(now)}</strong>
+          <span>{lastUpdated ? `Actualizado: ${formatTime(lastUpdated)} · ${sourceSummary}` : sourceSummary}</span>
         </div>
-      </aside>
+      </div>
+
+      <button class="btn btn-primary" type="button" on:click={loadEpg} disabled={loading}>
+        {loading ? 'Actualizando...' : 'Actualizar guía'}
+      </button>
     </section>
 
     {#if settingsOpen}
-      <section class="settings-panel" aria-labelledby="settings-title">
-        <div class="section-heading">
+      <section class="settings-panel card" aria-labelledby="settings-title">
+        <div class="settings-header">
           <div>
-            <p class="eyebrow">Configurable</p>
-            <h2 id="settings-title">Elige canales y orden</h2>
+            <p class="eyebrow">Personalización</p>
+            <h1 id="settings-title">Canales visibles y orden</h1>
+            <p>Los cambios se guardan automáticamente en este navegador.</p>
           </div>
-          <button class="btn btn-secondary" type="button" on:click={resetChannels}>Restablecer orden</button>
+          <div class="settings-actions">
+            <button class="btn btn-secondary" type="button" on:click={resetChannels}>Orden recomendado</button>
+            <button class="btn btn-ghost" type="button" on:click={() => (settingsOpen = false)}>Cerrar</button>
+          </div>
         </div>
 
-        <div class="settings-grid">
-          <div class="card settings-card">
-            <h3>Canales visibles</h3>
-            <p class="help-text">Usa las flechas para poner arriba tus cadenas favoritas.</p>
+        <div class="settings-layout">
+          <section class="settings-column" aria-labelledby="visible-title">
+            <div class="column-title">
+              <h2 id="visible-title">Se ven en portada</h2>
+              <span class="count-pill">{visibleChannelIds.length}</span>
+            </div>
 
             {#if visibleChannels.length}
               <ol class="selected-list">
                 {#each visibleChannels as channel, index (channel.id)}
                   <li>
-                    <span>{channel.name}</span>
+                    <span class="drag-handle" aria-hidden="true">☰</span>
+                    <span class="channel-name">{channel.name}</span>
                     <div class="mini-actions">
                       <button class="icon-button" type="button" on:click={() => moveChannel(channel.id, -1)} disabled={index === 0} aria-label={`Subir ${channel.name}`}>
                         ↑
@@ -433,6 +523,9 @@
                       >
                         ↓
                       </button>
+                      <button class="icon-button danger" type="button" on:click={() => hideChannel(channel.id)} aria-label={`Ocultar ${channel.name}`}>
+                        ×
+                      </button>
                     </div>
                   </li>
                 {/each}
@@ -440,43 +533,44 @@
             {:else}
               <p class="empty-text">No hay canales seleccionados.</p>
             {/if}
-          </div>
+          </section>
 
-          <div class="card settings-card">
+          <section class="settings-column" aria-labelledby="all-channels-title">
+            <div class="column-title">
+              <h2 id="all-channels-title">Todos los canales</h2>
+              <span class="count-pill">{channels.length}</span>
+            </div>
+
+            <div class="bulk-actions">
+              <button class="btn btn-secondary" type="button" on:click={showAllChannels}>Mostrar todos</button>
+              <button class="btn btn-secondary" type="button" on:click={hideAllChannels}>Dejar solo uno</button>
+            </div>
+
             <label class="label" for="channel-search">Buscar canal</label>
             <input id="channel-search" class="input" type="search" bind:value={channelSearch} placeholder="Ejemplo: La 1, Neox, DMAX" />
-            <p class="help-text">Marca o desmarca cadenas. La selección se guarda en este navegador.</p>
 
             <div class="channel-picker" aria-label="Listado de canales disponibles">
               {#each filteredChannels as channel (channel.id)}
-                <label class="channel-option">
-                  <input
-                    type="checkbox"
-                    checked={selectedChannelIds.includes(channel.id)}
-                    on:change={(event) => toggleChannel(channel.id, event.currentTarget.checked)}
-                  />
+                <button
+                  class:active={visibleChannelIds.includes(channel.id)}
+                  class="channel-toggle"
+                  type="button"
+                  on:click={() => toggleChannelVisibility(channel.id)}
+                  aria-pressed={visibleChannelIds.includes(channel.id)}
+                >
                   <span>{channel.name}</span>
-                </label>
+                  <strong>{visibleChannelIds.includes(channel.id) ? 'Visible' : 'Oculto'}</strong>
+                </button>
               {/each}
             </div>
-          </div>
+          </section>
         </div>
       </section>
     {/if}
 
-    <section class="toolbar" aria-label="Resumen de la guía">
-      <div>
-        <strong>{formatDate(now)}</strong>
-        <span>Ahora son las {formatTime(now)}</span>
-      </div>
-      <button class="btn btn-primary" type="button" on:click={loadEpg} disabled={loading}>
-        {loading ? 'Actualizando...' : 'Actualizar'}
-      </button>
-    </section>
-
     {#if errorMessage}
       <section class="alert alert-danger" role="alert">
-        <h2>No se ha podido cargar la programación</h2>
+        <h1>No se ha podido cargar la programación</h1>
         <p>{errorMessage}</p>
         <p>La web usa una copia local de Open-EPG para evitar errores de CORS. Ejecuta de nuevo el workflow de despliegue o de actualización de la guía.</p>
       </section>
@@ -484,56 +578,76 @@
 
     {#if loading && !programmes.length}
       <section class="loading-list" aria-label="Cargando canales">
-        {#each Array(6) as _}
+        {#each Array(8) as _}
           <div class="skeleton-card"></div>
         {/each}
       </section>
     {:else}
-      <section class="tv-grid" aria-label="Programación por cadenas">
+      <section class="channel-list" aria-label="Programación completa por cadenas">
         {#each rows as row (row.channel.id)}
-          <article class="channel-card card">
-            <header class="channel-header">
-              <h2>{row.channel.name}</h2>
-              {#if row.current}
-                <span class="badge live-badge">Ahora</span>
-              {:else}
-                <span class="badge muted-badge">Sin emisión actual</span>
-              {/if}
-            </header>
+          <article class="channel-card card" class:is-open={isExpanded(row.channel.id)}>
+            <button class="channel-summary" type="button" on:click={() => toggleExpanded(row.channel.id)} aria-expanded={isExpanded(row.channel.id)}>
+              <span class="channel-title-block">
+                <span class="channel-logo" aria-hidden="true">{row.channel.name.slice(0, 2).toUpperCase()}</span>
+                <span>
+                  <strong>{row.channel.name}</strong>
+                  <small>{row.schedule.length} programas en la guía</small>
+                </span>
+              </span>
+
+              <span class="summary-programmes">
+                <span>
+                  <small>Ahora</small>
+                  <strong>{row.current?.title || 'Sin datos ahora'}</strong>
+                </span>
+                <span>
+                  <small>Después</small>
+                  <strong>{row.next?.title || 'Sin siguiente programa'}</strong>
+                </span>
+              </span>
+
+              <span class="expand-indicator" aria-hidden="true">{isExpanded(row.channel.id) ? '−' : '+'}</span>
+            </button>
 
             {#if row.current}
-              <div class="programme current-programme">
-                <div class="programme-time">
-                  <strong>{formatTime(row.current.start)} - {formatTime(row.current.stop)}</strong>
-                  <span>{formatDuration(row.current)}</span>
-                </div>
-                <h3>{row.current.title}</h3>
-                {#if row.current.description}
-                  <p>{row.current.description}</p>
-                {/if}
+              <div class="current-strip">
+                <span>{formatTime(row.current.start)} - {formatTime(row.current.stop)}</span>
                 <div class="progress" aria-label={`Progreso aproximado del programa: ${getProgress(row.current)}%`}>
                   <span style={`width: ${getProgress(row.current)}%`}></span>
                 </div>
               </div>
-            {:else}
-              <div class="programme empty-programme">
-                <h3>No aparece ningún programa en emisión ahora</h3>
-                <p>Puede que la cadena no tenga datos para esta franja horaria.</p>
-              </div>
             {/if}
 
-            <div class="next-programme">
-              <span class="next-label">A continuación</span>
-              {#if row.next}
-                <strong>{formatTime(row.next.start)} - {formatTime(row.next.stop)}</strong>
-                <h3>{row.next.title}</h3>
-                {#if row.next.description}
-                  <p>{row.next.description}</p>
+            {#if isExpanded(row.channel.id)}
+              <div class="full-schedule">
+                {#if row.schedule.length}
+                  <ol class="programme-list">
+                    {#each row.schedule as programme (programme.channelId + programme.startMs)}
+                      <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
+                        <time datetime={programme.start.toISOString()}>{formatTime(programme.start)}</time>
+                        <div class="programme-detail">
+                          <div class="programme-heading">
+                            <h2>{programme.title}</h2>
+                            <span>{formatTime(programme.start)} - {formatTime(programme.stop)} · {formatDuration(programme)}</span>
+                          </div>
+                          {#if programme.description}
+                            <p>{programme.description}</p>
+                          {/if}
+                          {#if isCurrent(programme)}
+                            <span class="badge live-badge">En emisión ahora</span>
+                          {/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ol>
+                {:else}
+                  <div class="empty-schedule">
+                    <strong>No hay programación para este canal.</strong>
+                    <p>La fuente EPG no incluye emisiones para esta cadena en la guía cargada.</p>
+                  </div>
                 {/if}
-              {:else}
-                <p>No hay más programas próximos en la guía cargada.</p>
-              {/if}
-            </div>
+              </div>
+            {/if}
           </article>
         {/each}
       </section>
