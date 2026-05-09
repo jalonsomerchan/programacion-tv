@@ -1,69 +1,24 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
+  import {
+    buildRows,
+    filterProgrammesByDay,
+    filterProgrammesByTimeSlot,
+    filterRows,
+    getAvailableDays,
+    getDefaultChannelIds,
+    getFilteredChannels,
+    getLocalDateKey,
+    groupProgrammes,
+    inflateProgramme,
+    sanitizeSettings,
+  } from './lib/guide'
+  import type { Channel, ChannelRow, ChannelSettings, ExportedSettings, GuideJson, GuideMetadata, Programme, Theme, TimeSlot } from './lib/types'
 
-  const EPG_LOCAL_URL = `${import.meta.env.BASE_URL}data/spain4.xml`
+  const GUIDE_URL = `${import.meta.env.BASE_URL}data/guide.json`
   const SETTINGS_KEY = 'programacion-tv-channel-order-v2'
   const OLD_SETTINGS_KEY = 'programacion-tv-channel-order-v1'
   const THEME_KEY = 'programacion-tv-theme'
-
-  type Theme = 'light' | 'dark'
-
-  type Channel = {
-    id: string
-    name: string
-    normalized: string
-  }
-
-  type Programme = {
-    channelId: string
-    title: string
-    description: string
-    start: Date
-    stop: Date
-    startMs: number
-    stopMs: number
-  }
-
-  type ChannelSettings = {
-    visibleIds: string[]
-    hiddenIds: string[]
-  }
-
-  type ExportedSettings = ChannelSettings & {
-    app: 'programacion-tv'
-    version: 2
-    exportedAt: string
-  }
-
-  type ChannelRow = {
-    channel: Channel
-    current?: Programme
-    next?: Programme
-    schedule: Programme[]
-  }
-
-  type DefaultChannel = {
-    label: string
-    aliases: string[]
-  }
-
-  const defaultChannels: DefaultChannel[] = [
-    { label: 'La 1', aliases: ['la1', 'la1es', 'tve1', 'launo'] },
-    { label: 'La 2', aliases: ['la2', 'la2es', 'tve2', 'lados'] },
-    { label: 'Antena 3', aliases: ['antena3', 'antena3es', 'a3'] },
-    { label: 'Cuatro', aliases: ['cuatro', 'cuatroes'] },
-    { label: 'Telecinco', aliases: ['telecinco', 'telecincoes', 't5'] },
-    { label: 'laSexta', aliases: ['lasexta', 'lasextaes', 'sexta'] },
-    { label: 'Canal Extremadura', aliases: ['canalextremadura', 'extremadura', 'cextremadura'] },
-    { label: 'Neox', aliases: ['neox', 'neoxes'] },
-    { label: 'Nova', aliases: ['nova', 'novaes'] },
-    { label: 'Mega', aliases: ['mega', 'megaes'] },
-    { label: 'TRECE TV', aliases: ['trecetv', 'trece', '13tv', '13tves'] },
-    { label: 'DMAX', aliases: ['dmax', 'dmaxes'] },
-    { label: 'DKISS', aliases: ['dkiss', 'dkisses'] },
-    { label: 'Divinity', aliases: ['divinity', 'divinityes', 'divnity'] },
-    { label: 'Atreseries', aliases: ['atreseries', 'atreserieses', 'atreseriesinternacional'] },
-  ]
 
   const timeFormatter = new Intl.DateTimeFormat('es-ES', {
     hour: '2-digit',
@@ -76,23 +31,44 @@
     month: 'long',
   })
 
+  const fullDateFormatter = new Intl.DateTimeFormat('es-ES', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  })
+
+  const slotLabels: Record<TimeSlot, string> = {
+    all: 'Todo el día',
+    now: 'Ahora',
+    morning: 'Mañana',
+    afternoon: 'Tarde',
+    prime: 'Prime time',
+    night: 'Madrugada',
+  }
+
   let channels: Channel[] = []
   let programmes: Programme[] = []
+  let metadata: GuideMetadata | null = null
   let visibleChannelIds: string[] = []
   let hiddenChannelIds: string[] = []
   let channelSearch = ''
   let searchQuery = ''
   let now = new Date()
-  let lastUpdated: Date | null = null
+  let selectedDay = ''
+  let selectedSlot: TimeSlot = 'all'
   let loading = true
   let errorMessage = ''
   let settingsOpen = false
   let importMessage = ''
   let draggedChannelId = ''
   let theme: Theme = 'light'
+  let settingsModal: HTMLElement | null = null
+  let openerButton: HTMLElement | null = null
 
   $: channelMap = new Map(channels.map((channel) => [channel.id, channel]))
-  $: programmesByChannel = groupProgrammes(programmes)
+  $: availableDays = getAvailableDays(programmes)
+  $: selectedProgrammes = filterProgrammesByTimeSlot(filterProgrammesByDay(programmes, selectedDay), selectedSlot, now)
+  $: programmesByChannel = groupProgrammes(selectedProgrammes)
   $: visibleChannels = visibleChannelIds
     .map((channelId) => channelMap.get(channelId))
     .filter((channel): channel is Channel => Boolean(channel))
@@ -100,10 +76,11 @@
   $: displayedRows = filterRows(rows, searchQuery)
   $: filteredChannels = getFilteredChannels(channels, channelSearch)
   $: selectedCount = visibleChannelIds.length
+  $: guideGeneratedAt = metadata ? new Date(metadata.generatedAt) : null
 
   onMount(() => {
     setupTheme()
-    loadEpg()
+    loadGuide()
 
     const interval = window.setInterval(() => {
       now = new Date()
@@ -111,14 +88,6 @@
 
     return () => window.clearInterval(interval)
   })
-
-  function normalize(value: string) {
-    return value
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '')
-  }
 
   function setupTheme() {
     const storedTheme = window.localStorage.getItem(THEME_KEY) as Theme | null
@@ -133,14 +102,21 @@
     window.localStorage.setItem(THEME_KEY, theme)
   }
 
-  async function loadEpg() {
+  async function loadGuide() {
     loading = true
     errorMessage = ''
 
     try {
-      const xml = await fetchXmlText()
-      parseXmlTv(xml)
-      lastUpdated = new Date()
+      const guide = await fetchGuide()
+      const parsedProgrammes = guide.programmes.map(inflateProgramme).sort((a, b) => a.startMs - b.startMs)
+      const initialSettings = getInitialSettings(guide.channels)
+
+      channels = guide.channels
+      programmes = parsedProgrammes
+      metadata = guide.metadata
+      visibleChannelIds = initialSettings.visibleIds
+      hiddenChannelIds = initialSettings.hiddenIds
+      selectedDay = getInitialDay(parsedProgrammes)
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'No se ha podido cargar la programación.'
     } finally {
@@ -148,94 +124,26 @@
     }
   }
 
-  async function fetchXmlText() {
-    const response = await fetch(EPG_LOCAL_URL, { cache: 'no-store' })
+  async function fetchGuide() {
+    const response = await fetch(GUIDE_URL, { cache: 'no-store' })
 
     if (!response.ok) {
-      throw new Error(
-        'No se ha encontrado la guía local. Vuelve a ejecutar el despliegue para descargar la programación desde Open-EPG.',
-      )
+      throw new Error('No se ha encontrado la guía local. Vuelve a ejecutar el workflow de actualización desde GitHub Actions.')
     }
 
-    return await response.text()
-  }
+    const guide = (await response.json()) as GuideJson
 
-  function parseXmlTv(xmlText: string) {
-    const parser = new DOMParser()
-    const xml = parser.parseFromString(xmlText, 'application/xml')
-    const parserError = xml.querySelector('parsererror')
-
-    if (parserError) {
-      throw new Error('La guía de programación no tiene un formato XML válido.')
+    if (!guide.channels?.length || !guide.programmes?.length) {
+      throw new Error('La guía local no contiene canales o programas válidos.')
     }
 
-    const parsedChannels = Array.from(xml.querySelectorAll('channel')).map((node) => {
-      const id = node.getAttribute('id')?.trim() || ''
-      const name = node.querySelector('display-name')?.textContent?.trim() || id
-
-      return {
-        id,
-        name: cleanChannelName(name),
-        normalized: normalize(name),
-      }
-    })
-
-    const parsedProgrammes = Array.from(xml.querySelectorAll('programme'))
-      .map((node) => {
-        const channelId = node.getAttribute('channel')?.trim() || ''
-        const start = parseXmlTvDate(node.getAttribute('start'))
-        const stop = parseXmlTvDate(node.getAttribute('stop'))
-
-        if (!channelId || !start || !stop) {
-          return null
-        }
-
-        return {
-          channelId,
-          title: node.querySelector('title')?.textContent?.trim() || 'Programa sin título',
-          description: node.querySelector('desc')?.textContent?.trim() || '',
-          start,
-          stop,
-          startMs: start.getTime(),
-          stopMs: stop.getTime(),
-        }
-      })
-      .filter((programme): programme is Programme => Boolean(programme))
-      .sort((a, b) => a.startMs - b.startMs)
-
-    const initialSettings = getInitialSettings(parsedChannels)
-
-    channels = parsedChannels
-    programmes = parsedProgrammes
-    visibleChannelIds = initialSettings.visibleIds
-    hiddenChannelIds = initialSettings.hiddenIds
+    return guide
   }
 
-  function parseXmlTvDate(value: string | null) {
-    if (!value) return null
-
-    const match = value.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/)
-    if (!match) return null
-
-    const [, year, month, day, hour, minute, second, offset = '+0000'] = match
-    const offsetSign = offset.startsWith('-') ? -1 : 1
-    const offsetHours = Number(offset.slice(1, 3))
-    const offsetMinutes = Number(offset.slice(3, 5))
-    const offsetMs = offsetSign * (offsetHours * 60 + offsetMinutes) * 60_000
-    const utcMs = Date.UTC(
-      Number(year),
-      Number(month) - 1,
-      Number(day),
-      Number(hour),
-      Number(minute),
-      Number(second),
-    )
-
-    return new Date(utcMs - offsetMs)
-  }
-
-  function cleanChannelName(name: string) {
-    return name.replace(/\.es$/i, '').trim()
+  function getInitialDay(items: Programme[]) {
+    const today = getLocalDateKey(new Date())
+    const days = getAvailableDays(items)
+    return days.includes(today) ? today : days[0] || ''
   }
 
   function getInitialSettings(parsedChannels: Channel[]): ChannelSettings {
@@ -262,91 +170,6 @@
     const visibleIds = getDefaultChannelIds(parsedChannels)
     const hiddenIds = parsedChannels.map((channel) => channel.id).filter((id) => !visibleIds.includes(id))
     return { visibleIds, hiddenIds }
-  }
-
-  function sanitizeSettings(settings: Partial<ChannelSettings>, parsedChannels: Channel[]): ChannelSettings {
-    const validIds = parsedChannels.map((channel) => channel.id)
-    const visibleIds = uniqueIds(settings.visibleIds || [], validIds)
-    const hiddenIds = uniqueIds(settings.hiddenIds || [], validIds).filter((id) => !visibleIds.includes(id))
-    const missingIds = validIds.filter((id) => !visibleIds.includes(id) && !hiddenIds.includes(id))
-
-    if (visibleIds.length === 0) {
-      const defaultIds = getDefaultChannelIds(parsedChannels)
-      return {
-        visibleIds: defaultIds,
-        hiddenIds: validIds.filter((id) => !defaultIds.includes(id)),
-      }
-    }
-
-    return {
-      visibleIds,
-      hiddenIds: [...hiddenIds, ...missingIds],
-    }
-  }
-
-  function uniqueIds(ids: string[], validIds: string[]) {
-    return Array.from(new Set(ids)).filter((id) => validIds.includes(id))
-  }
-
-  function getDefaultChannelIds(parsedChannels: Channel[]) {
-    const ids = defaultChannels
-      .map((defaultChannel) => {
-        const aliasSet = defaultChannel.aliases.map(normalize)
-
-        return parsedChannels.find((channel) => {
-          const normalizedId = normalize(channel.id)
-          return aliasSet.some(
-            (alias) => channel.normalized === alias || normalizedId === alias || channel.normalized.includes(alias) || normalizedId.includes(alias),
-          )
-        })?.id
-      })
-      .filter((id): id is string => Boolean(id))
-
-    return Array.from(new Set(ids))
-  }
-
-  function groupProgrammes(items: Programme[]) {
-    const groups = new Map<string, Programme[]>()
-
-    for (const programme of items) {
-      const channelProgrammes = groups.get(programme.channelId) || []
-      channelProgrammes.push(programme)
-      groups.set(programme.channelId, channelProgrammes)
-    }
-
-    return groups
-  }
-
-  function buildRows(selectedChannels: Channel[], groups: Map<string, Programme[]>, currentDate: Date): ChannelRow[] {
-    const currentTime = currentDate.getTime()
-
-    return selectedChannels.map((channel) => {
-      const schedule = groups.get(channel.id) || []
-      const current = schedule.find((programme) => programme.startMs <= currentTime && programme.stopMs > currentTime)
-      const next = schedule.find((programme) => programme.startMs > currentTime)
-
-      return { channel, current, next, schedule }
-    })
-  }
-
-  function filterRows(items: ChannelRow[], query: string) {
-    const normalizedQuery = normalize(query)
-    if (!normalizedQuery) return items
-
-    return items.filter((row) => {
-      return (
-        row.channel.normalized.includes(normalizedQuery) ||
-        row.schedule.some((programme) => normalize(`${programme.title} ${programme.description}`).includes(normalizedQuery))
-      )
-    })
-  }
-
-  function getFilteredChannels(channelList: Channel[], search: string) {
-    const normalizedSearch = normalize(search)
-
-    return channelList
-      .filter((channel) => !normalizedSearch || channel.normalized.includes(normalizedSearch) || normalize(channel.id).includes(normalizedSearch))
-      .sort((a, b) => a.name.localeCompare(b.name, 'es'))
   }
 
   function saveSettings(nextVisibleIds = visibleChannelIds, nextHiddenIds = hiddenChannelIds) {
@@ -409,6 +232,46 @@
     newOrder.splice(toIndex, 0, moved)
     saveSettings(newOrder, hiddenChannelIds)
     draggedChannelId = ''
+  }
+
+  async function openSettings(event: MouseEvent) {
+    openerButton = event.currentTarget as HTMLElement
+    settingsOpen = true
+    await tick()
+    settingsModal?.focus()
+  }
+
+  function closeSettings() {
+    settingsOpen = false
+    importMessage = ''
+    void tick().then(() => openerButton?.focus())
+  }
+
+  function handleModalKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      closeSettings()
+      return
+    }
+
+    if (event.key !== 'Tab' || !settingsModal) return
+
+    const focusable = Array.from(
+      settingsModal.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'),
+    ).filter((element) => !element.hasAttribute('disabled') && element.offsetParent !== null)
+
+    if (!focusable.length) return
+
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
   }
 
   function resetChannels() {
@@ -498,6 +361,20 @@
     return dateFormatter.format(date)
   }
 
+  function formatFullDate(dateKey: string) {
+    const [year, month, day] = dateKey.split('-').map(Number)
+    const date = new Date(year, month - 1, day)
+    const today = getLocalDateKey(now)
+    const tomorrowDate = new Date(now)
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+    const tomorrow = getLocalDateKey(tomorrowDate)
+
+    if (dateKey === today) return 'Hoy'
+    if (dateKey === tomorrow) return 'Mañana'
+
+    return fullDateFormatter.format(date)
+  }
+
   function formatDuration(programme: Programme) {
     const minutes = Math.max(1, Math.round((programme.stopMs - programme.startMs) / 60_000))
 
@@ -521,7 +398,7 @@
 <svelte:head>
   <meta
     name="description"
-    content="Consulta la programación completa de la televisión en España por cadenas, con lo que se emite ahora y todos los programas del día."
+    content="Consulta la programación completa de la televisión en España por cadenas, con lo que se emite ahora, lo próximo y la parrilla por días."
   />
 </svelte:head>
 
@@ -530,7 +407,7 @@
 
   <header class="site-header">
     <nav class="topbar" aria-label="Navegación principal">
-      <a class="brand" href="/" aria-label="Programación TV España">
+      <a class="brand" href={import.meta.env.BASE_URL} aria-label="Programación TV España">
         <span class="brand-mark" aria-hidden="true">TV</span>
         <span>
           <strong>Programación TV</strong>
@@ -539,7 +416,7 @@
       </a>
 
       <div class="topbar-actions">
-        <button class="btn btn-secondary" type="button" on:click={() => (settingsOpen = true)}>
+        <button class="btn btn-secondary" type="button" on:click={openSettings}>
           Opciones ({selectedCount})
         </button>
         <button class="btn btn-ghost" type="button" on:click={toggleTheme}>
@@ -555,37 +432,61 @@
         <span class="status-dot" class:loading-dot={loading}></span>
         <div>
           <strong>Ahora son las {formatTime(now)}</strong>
-          <span>{lastUpdated ? `Actualizado: ${formatTime(lastUpdated)}` : 'Cargando la guía'}</span>
+          <span>
+            {guideGeneratedAt ? `Guía generada: ${formatDate(guideGeneratedAt)} a las ${formatTime(guideGeneratedAt)}` : 'Cargando la guía'}
+          </span>
         </div>
       </div>
 
       <div class="control-actions">
         <label class="minimal-search" for="guide-search">
           <span class="sr-only">Buscar en la guía</span>
-          <input id="guide-search" type="search" bind:value={searchQuery} placeholder="Buscar" />
+          <input id="guide-search" type="search" bind:value={searchQuery} placeholder="Buscar programa o canal" />
         </label>
-        <button class="btn btn-primary" type="button" on:click={loadEpg} disabled={loading}>
+        <button class="btn btn-primary" type="button" on:click={loadGuide} disabled={loading}>
           {loading ? 'Actualizando...' : 'Actualizar'}
         </button>
       </div>
     </section>
 
+    {#if availableDays.length}
+      <section class="filters card" aria-label="Filtros de programación">
+        <div class="filter-group" aria-label="Día de programación">
+          {#each availableDays as day}
+            <button class:active={selectedDay === day} class="filter-chip" type="button" on:click={() => (selectedDay = day)}>
+              {formatFullDate(day)}
+            </button>
+          {/each}
+        </div>
+
+        <div class="filter-group" aria-label="Franja horaria">
+          {#each Object.entries(slotLabels) as [slot, label]}
+            <button class:active={selectedSlot === slot} class="filter-chip" type="button" on:click={() => (selectedSlot = slot as TimeSlot)}>
+              {label}
+            </button>
+          {/each}
+        </div>
+      </section>
+    {/if}
+
     {#if settingsOpen}
-      <div class="modal-backdrop" role="presentation" on:click={() => (settingsOpen = false)}>
+      <div class="modal-backdrop" role="presentation" on:click={closeSettings} on:keydown={handleModalKeydown}>
         <section
+          bind:this={settingsModal}
           class="settings-modal card"
           role="dialog"
           aria-modal="true"
           aria-labelledby="settings-title"
+          tabindex="-1"
           on:click|stopPropagation
         >
           <div class="settings-header">
             <div>
               <p class="eyebrow">Opciones</p>
               <h1 id="settings-title">Canales y configuración</h1>
-              <p>Arrastra los canales visibles para cambiar el orden. Los cambios se guardan automáticamente.</p>
+              <p>Arrastra los canales visibles o usa los botones de subir y bajar. Los cambios se guardan automáticamente.</p>
             </div>
-            <button class="btn btn-ghost" type="button" on:click={() => (settingsOpen = false)}>Cerrar</button>
+            <button class="btn btn-ghost" type="button" on:click={closeSettings}>Cerrar</button>
           </div>
 
           <div class="settings-tools">
@@ -612,7 +513,7 @@
 
               {#if visibleChannels.length}
                 <ol class="selected-list drag-list">
-                  {#each visibleChannels as channel (channel.id)}
+                  {#each visibleChannels as channel, index (channel.id)}
                     <li
                       class:dragging={draggedChannelId === channel.id}
                       draggable="true"
@@ -624,6 +525,12 @@
                       <span class="drag-handle" aria-hidden="true">☰</span>
                       <span class="channel-name">{channel.name}</span>
                       <div class="mini-actions">
+                        <button class="icon-button" type="button" on:click={() => moveChannel(channel.id, -1)} disabled={index === 0} aria-label={`Subir ${channel.name}`}>
+                          ↑
+                        </button>
+                        <button class="icon-button" type="button" on:click={() => moveChannel(channel.id, 1)} disabled={index === visibleChannels.length - 1} aria-label={`Bajar ${channel.name}`}>
+                          ↓
+                        </button>
                         <button class="icon-button danger" type="button" on:click={() => hideChannel(channel.id)} aria-label={`Ocultar ${channel.name}`}>
                           ×
                         </button>
@@ -682,7 +589,7 @@
     {:else if displayedRows.length === 0}
       <section class="empty-results card">
         <strong>No hay resultados</strong>
-        <p>Prueba con otro canal o con el nombre de un programa.</p>
+        <p>Prueba con otro canal, día, franja horaria o nombre de programa.</p>
       </section>
     {:else}
       <section class="channel-list" aria-label="Programación completa por cadenas">
@@ -762,6 +669,9 @@
   <footer class="site-footer">
     <p>
       Datos de programación de <a href="https://www.open-epg.com/" target="_blank" rel="noreferrer">Open-EPG</a>. Los horarios se muestran en tu hora local.
+      {#if metadata}
+        <span>Guía con {metadata.channelCount} canales y {metadata.programmeCount} programas.</span>
+      {/if}
     </p>
   </footer>
 </div>
