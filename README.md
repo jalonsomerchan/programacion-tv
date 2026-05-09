@@ -1,47 +1,125 @@
-# Svelte + TS + Vite
+# Programación TV España
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+Aplicación estática para consultar la programación de televisión en España. Está hecha con Vite, Svelte 5 y TypeScript, y se despliega en GitHub Pages.
 
-## Recommended IDE Setup
+La guía se actualiza automáticamente desde Open-EPG, se convierte a un JSON ligero durante el workflow y se sirve como fichero estático para evitar CORS y reducir trabajo en el navegador.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+## Funcionalidades
 
-## Need an official Svelte framework?
+- Consulta de lo que se emite ahora y lo que viene después por canal.
+- Parrilla completa por canal.
+- Búsqueda por canal, título y descripción.
+- Selección, ocultación y ordenación de canales.
+- Exportación e importación de la configuración en JSON.
+- Filtros por día y franja horaria: ahora, mañana, tarde, prime time y madrugada.
+- Tema claro/oscuro persistente.
+- Metadatos SEO, sitemap, robots.txt y datos estructurados.
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+## Requisitos
 
-## Technical considerations
+- Node.js 24 o compatible con las versiones usadas por Vite y Svelte.
+- npm.
 
-**Why use this over SvelteKit?**
+## Instalación
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
-
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
-
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
-
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
-
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
-
-**Why include `.vscode/extensions.json`?**
-
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
-
-**Why enable `allowJs` in the TS template?**
-
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
+```bash
+npm ci
+npm run dev
 ```
+
+La aplicación se abrirá en el servidor local de Vite.
+
+## Scripts disponibles
+
+```bash
+npm run dev          # servidor de desarrollo
+npm run check        # svelte-check y TypeScript
+npm test             # tests básicos con node:test
+npm run build        # build de producción
+npm run preview      # previsualiza el build
+npm run build:guide  # convierte public/data/spain4.xml en public/data/guide.json
+```
+
+## Origen de datos
+
+La programación se descarga desde:
+
+```text
+https://www.open-epg.com/files/spain4.xml.gz
+```
+
+El workflow descomprime el XML en `public/data/spain4.xml` y ejecuta `scripts/build-guide.mjs` para generar `public/data/guide.json`.
+
+El parser respeta el offset horario incluido en cada atributo XMLTV `start` y `stop`. No reescribe las fechas a mano, porque cambiar solo el offset sin convertir el instante puede desplazar la programación.
+
+## Actualización y despliegue
+
+El despliegue está en `.github/workflows/deploy.yml`.
+
+Se ejecuta:
+
+- en cada push a `main`;
+- cada 6 horas mediante cron;
+- manualmente con `workflow_dispatch`.
+
+Pasos principales:
+
+1. Instala dependencias con `npm ci`.
+2. Descarga `spain4.xml.gz` desde Open-EPG.
+3. Valida que el XML contiene `<tv>` y `<programme>`.
+4. Genera `public/data/guide.json`.
+5. Ejecuta `npm run check`.
+6. Ejecuta `npm test`.
+7. Construye la web con `npm run build`.
+8. Publica `dist` en GitHub Pages.
+
+Si Open-EPG falla temporalmente, el workflow intenta reutilizar la última guía publicada en GitHub Pages. En ese caso marca `metadata.fallbackUsed` dentro de `guide.json`.
+
+## Estructura principal
+
+```text
+.github/workflows/deploy.yml  # actualización de EPG y despliegue
+public/                       # assets públicos, robots, sitemap y datos generados
+scripts/build-guide.mjs        # conversor XMLTV -> JSON
+scripts/*.test.mjs             # tests básicos sin dependencias extra
+src/App.svelte                 # interfaz principal
+src/app.css                    # estilos globales
+src/lib/                       # tipos, canales por defecto y utilidades puras
+```
+
+## Solución de problemas
+
+### No se ha encontrado la guía local
+
+Ejecuta el workflow de despliegue o genera la guía localmente:
+
+```bash
+mkdir -p public/data
+# descarga manualmente spain4.xml en public/data/spain4.xml
+npm run build:guide
+npm run dev
+```
+
+### Los horarios aparecen desplazados
+
+Comprueba el offset de las fechas en el XML original. El parser interpreta el instante usando el offset incluido en XMLTV. No se debe sustituir `+0000` por `+0100` o `+0200` sin convertir también la hora.
+
+### Falla la descarga de Open-EPG
+
+El workflow tiene reintentos y fallback a la última guía publicada. Si no existe una guía válida previa, el despliegue fallará para evitar publicar una app sin datos.
+
+## SEO
+
+La aplicación incluye:
+
+- `canonical` absoluto.
+- Open Graph y Twitter Card.
+- `public/robots.txt`.
+- `public/sitemap.xml`.
+- JSON-LD de tipo `WebApplication`.
+
+Si se cambia la URL pública, actualiza `index.html`, `public/robots.txt`, `public/sitemap.xml` y la variable `DEPLOYED_GUIDE_URL` del workflow.
+
+## Atribución
+
+Los datos de programación proceden de Open-EPG. Revisa sus condiciones de uso antes de redistribuir o reutilizar la guía fuera de este proyecto.
