@@ -1,10 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="es" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>programacion-tv</title>
+    <meta name="robots" content="index,follow" />
+    <meta
+      name="description"
+      content="Consulta la programación de televisión en España: qué están emitiendo ahora y qué programa viene después en las principales cadenas."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Programación TV España" />
+    <meta
+      property="og:description"
+      content="Guía clara y móvil para ver qué están emitiendo ahora y qué empieza después en la televisión de España."
+    />
+    <meta property="og:url" content="/" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Programación TV España" />
+    <meta
+      name="twitter:description"
+      content="Consulta ahora la programación de televisión en España por cadenas, con el programa actual y el siguiente."
+    />
+    <title>Programación TV España: qué echan ahora</title>
+    <script>
+      (() => {
+        const stored = localStorage.getItem('programacion-tv-theme')
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.dataset.theme = stored || (prefersDark ? 'dark' : 'light')
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>
