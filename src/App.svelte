@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
 
   const EPG_LOCAL_URL = `${import.meta.env.BASE_URL}data/spain4.xml`
   const SETTINGS_KEY = 'programacion-tv-channel-order-v2'
@@ -27,6 +27,12 @@
   type ChannelSettings = {
     visibleIds: string[]
     hiddenIds: string[]
+  }
+
+  type ExportedSettings = ChannelSettings & {
+    app: 'programacion-tv'
+    version: 2
+    exportedAt: string
   }
 
   type ChannelRow = {
@@ -81,6 +87,8 @@
   let loading = true
   let errorMessage = ''
   let settingsOpen = false
+  let importMessage = ''
+  let draggedChannelId = ''
   let theme: Theme = 'light'
 
   $: channelMap = new Map(channels.map((channel) => [channel.id, channel]))
@@ -380,10 +388,34 @@
     saveSettings(newOrder, hiddenChannelIds)
   }
 
+  function handleDragStart(channelId: string) {
+    draggedChannelId = channelId
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault()
+  }
+
+  function handleDrop(targetChannelId: string) {
+    if (!draggedChannelId || draggedChannelId === targetChannelId) return
+
+    const newOrder = [...visibleChannelIds]
+    const fromIndex = newOrder.indexOf(draggedChannelId)
+    const toIndex = newOrder.indexOf(targetChannelId)
+
+    if (fromIndex === -1 || toIndex === -1) return
+
+    const [moved] = newOrder.splice(fromIndex, 1)
+    newOrder.splice(toIndex, 0, moved)
+    saveSettings(newOrder, hiddenChannelIds)
+    draggedChannelId = ''
+  }
+
   function resetChannels() {
     const defaultIds = getDefaultChannelIds(channels)
     saveSettings(defaultIds, channels.map((channel) => channel.id).filter((id) => !defaultIds.includes(id)))
     channelSearch = ''
+    importMessage = ''
   }
 
   function showAllChannels() {
@@ -396,6 +428,57 @@
     const firstDefault = defaultIds[0] || channels[0]?.id
     if (!firstDefault) return
     saveSettings([firstDefault], channels.map((channel) => channel.id).filter((id) => id !== firstDefault))
+  }
+
+  function exportSettings() {
+    const settings: ExportedSettings = {
+      app: 'programacion-tv',
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      visibleIds: visibleChannelIds,
+      hiddenIds: hiddenChannelIds,
+    }
+
+    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'programacion-tv-config.json'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function importSettings(event: Event) {
+    const input = event.currentTarget as HTMLInputElement
+    const file = input.files?.[0]
+
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text) as Partial<ExportedSettings>
+      const sanitized = sanitizeSettings(parsed, channels)
+      saveSettings(sanitized.visibleIds, sanitized.hiddenIds)
+      importMessage = 'Configuración cargada correctamente.'
+    } catch {
+      importMessage = 'No se ha podido cargar el JSON. Comprueba que es una configuración válida.'
+    } finally {
+      input.value = ''
+    }
+  }
+
+  async function handleDetailsToggle(event: Event, row: ChannelRow) {
+    const details = event.currentTarget as HTMLDetailsElement
+    if (!details.open || !row.current) return
+
+    await tick()
+    const currentItem = details.querySelector<HTMLElement>('.current-item')
+    const scrollBox = details.querySelector<HTMLElement>('.schedule-scroll')
+
+    if (!currentItem || !scrollBox) return
+
+    const top = currentItem.offsetTop - scrollBox.offsetTop - 24
+    scrollBox.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
   }
 
   function isCurrent(programme: Programme) {
@@ -456,8 +539,8 @@
       </a>
 
       <div class="topbar-actions">
-        <button class="btn btn-secondary" type="button" on:click={() => (settingsOpen = !settingsOpen)} aria-expanded={settingsOpen}>
-          Canales ({selectedCount})
+        <button class="btn btn-secondary" type="button" on:click={() => (settingsOpen = true)}>
+          Opciones ({selectedCount})
         </button>
         <button class="btn btn-ghost" type="button" on:click={toggleTheme}>
           {theme === 'dark' ? 'Claro' : 'Oscuro'}
@@ -488,88 +571,98 @@
     </section>
 
     {#if settingsOpen}
-      <section class="settings-panel card" aria-labelledby="settings-title">
-        <div class="settings-header">
-          <div>
-            <p class="eyebrow">Personalización</p>
-            <h1 id="settings-title">Canales visibles y orden</h1>
-            <p>Los cambios se guardan automáticamente en este navegador.</p>
-          </div>
-          <div class="settings-actions">
-            <button class="btn btn-secondary" type="button" on:click={resetChannels}>Orden recomendado</button>
+      <div class="modal-backdrop" role="presentation" on:click={() => (settingsOpen = false)}>
+        <section
+          class="settings-modal card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-title"
+          on:click|stopPropagation
+        >
+          <div class="settings-header">
+            <div>
+              <p class="eyebrow">Opciones</p>
+              <h1 id="settings-title">Canales y configuración</h1>
+              <p>Arrastra los canales visibles para cambiar el orden. Los cambios se guardan automáticamente.</p>
+            </div>
             <button class="btn btn-ghost" type="button" on:click={() => (settingsOpen = false)}>Cerrar</button>
           </div>
-        </div>
 
-        <div class="settings-layout">
-          <section class="settings-column" aria-labelledby="visible-title">
-            <div class="column-title">
-              <h2 id="visible-title">Se ven en portada</h2>
-              <span class="count-pill">{visibleChannelIds.length}</span>
-            </div>
+          <div class="settings-tools">
+            <button class="btn btn-secondary" type="button" on:click={resetChannels}>Orden recomendado</button>
+            <button class="btn btn-secondary" type="button" on:click={showAllChannels}>Mostrar todos</button>
+            <button class="btn btn-secondary" type="button" on:click={hideAllChannels}>Dejar solo uno</button>
+            <button class="btn btn-primary" type="button" on:click={exportSettings}>Exportar JSON</button>
+            <label class="btn btn-secondary file-button">
+              Cargar JSON
+              <input type="file" accept="application/json,.json" on:change={importSettings} />
+            </label>
+          </div>
 
-            {#if visibleChannels.length}
-              <ol class="selected-list">
-                {#each visibleChannels as channel, index (channel.id)}
-                  <li>
-                    <span class="drag-handle" aria-hidden="true">☰</span>
-                    <span class="channel-name">{channel.name}</span>
-                    <div class="mini-actions">
-                      <button class="icon-button" type="button" on:click={() => moveChannel(channel.id, -1)} disabled={index === 0} aria-label={`Subir ${channel.name}`}>
-                        ↑
-                      </button>
-                      <button
-                        class="icon-button"
-                        type="button"
-                        on:click={() => moveChannel(channel.id, 1)}
-                        disabled={index === visibleChannels.length - 1}
-                        aria-label={`Bajar ${channel.name}`}
-                      >
-                        ↓
-                      </button>
-                      <button class="icon-button danger" type="button" on:click={() => hideChannel(channel.id)} aria-label={`Ocultar ${channel.name}`}>
-                        ×
-                      </button>
-                    </div>
-                  </li>
+          {#if importMessage}
+            <p class="import-message">{importMessage}</p>
+          {/if}
+
+          <div class="settings-layout">
+            <section class="settings-column" aria-labelledby="visible-title">
+              <div class="column-title">
+                <h2 id="visible-title">Visibles</h2>
+                <span class="count-pill">{visibleChannelIds.length}</span>
+              </div>
+
+              {#if visibleChannels.length}
+                <ol class="selected-list drag-list">
+                  {#each visibleChannels as channel (channel.id)}
+                    <li
+                      class:dragging={draggedChannelId === channel.id}
+                      draggable="true"
+                      on:dragstart={() => handleDragStart(channel.id)}
+                      on:dragover={handleDragOver}
+                      on:drop={() => handleDrop(channel.id)}
+                      on:dragend={() => (draggedChannelId = '')}
+                    >
+                      <span class="drag-handle" aria-hidden="true">☰</span>
+                      <span class="channel-name">{channel.name}</span>
+                      <div class="mini-actions">
+                        <button class="icon-button danger" type="button" on:click={() => hideChannel(channel.id)} aria-label={`Ocultar ${channel.name}`}>
+                          ×
+                        </button>
+                      </div>
+                    </li>
+                  {/each}
+                </ol>
+              {:else}
+                <p class="empty-text">No hay canales seleccionados.</p>
+              {/if}
+            </section>
+
+            <section class="settings-column" aria-labelledby="all-channels-title">
+              <div class="column-title">
+                <h2 id="all-channels-title">Todos los canales</h2>
+                <span class="count-pill">{channels.length}</span>
+              </div>
+
+              <label class="label" for="channel-search">Buscar canal</label>
+              <input id="channel-search" class="input" type="search" bind:value={channelSearch} placeholder="Ejemplo: La 1, Neox, DMAX" />
+
+              <div class="channel-picker" aria-label="Listado de canales disponibles">
+                {#each filteredChannels as channel (channel.id)}
+                  <button
+                    class:active={visibleChannelIds.includes(channel.id)}
+                    class="channel-toggle"
+                    type="button"
+                    on:click={() => toggleChannelVisibility(channel.id)}
+                    aria-pressed={visibleChannelIds.includes(channel.id)}
+                  >
+                    <span>{channel.name}</span>
+                    <strong>{visibleChannelIds.includes(channel.id) ? 'Visible' : 'Oculto'}</strong>
+                  </button>
                 {/each}
-              </ol>
-            {:else}
-              <p class="empty-text">No hay canales seleccionados.</p>
-            {/if}
-          </section>
-
-          <section class="settings-column" aria-labelledby="all-channels-title">
-            <div class="column-title">
-              <h2 id="all-channels-title">Todos los canales</h2>
-              <span class="count-pill">{channels.length}</span>
-            </div>
-
-            <div class="bulk-actions">
-              <button class="btn btn-secondary" type="button" on:click={showAllChannels}>Mostrar todos</button>
-              <button class="btn btn-secondary" type="button" on:click={hideAllChannels}>Dejar solo uno</button>
-            </div>
-
-            <label class="label" for="channel-search">Buscar canal</label>
-            <input id="channel-search" class="input" type="search" bind:value={channelSearch} placeholder="Ejemplo: La 1, Neox, DMAX" />
-
-            <div class="channel-picker" aria-label="Listado de canales disponibles">
-              {#each filteredChannels as channel (channel.id)}
-                <button
-                  class:active={visibleChannelIds.includes(channel.id)}
-                  class="channel-toggle"
-                  type="button"
-                  on:click={() => toggleChannelVisibility(channel.id)}
-                  aria-pressed={visibleChannelIds.includes(channel.id)}
-                >
-                  <span>{channel.name}</span>
-                  <strong>{visibleChannelIds.includes(channel.id) ? 'Visible' : 'Oculto'}</strong>
-                </button>
-              {/each}
-            </div>
-          </section>
-        </div>
-      </section>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
     {/if}
 
     {#if errorMessage}
@@ -594,7 +687,7 @@
     {:else}
       <section class="channel-list" aria-label="Programación completa por cadenas">
         {#each displayedRows as row (row.channel.id)}
-          <details class="channel-card card">
+          <details class="channel-card card" on:toggle={(event) => handleDetailsToggle(event, row)}>
             <summary class="channel-summary">
               <span class="channel-title-block">
                 <span class="channel-logo" aria-hidden="true">{row.channel.name.slice(0, 2).toUpperCase()}</span>
@@ -632,25 +725,27 @@
 
             <div class="full-schedule">
               {#if row.schedule.length}
-                <ol class="programme-list">
-                  {#each row.schedule as programme (programme.channelId + programme.startMs)}
-                    <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
-                      <time datetime={programme.start.toISOString()}>{formatTime(programme.start)}</time>
-                      <div class="programme-detail">
-                        <div class="programme-heading">
-                          <h2>{programme.title}</h2>
-                          <span>{formatTime(programme.start)} - {formatTime(programme.stop)} · {formatDuration(programme)}</span>
+                <div class="schedule-scroll" tabindex="0">
+                  <ol class="programme-list">
+                    {#each row.schedule as programme (programme.channelId + programme.startMs)}
+                      <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
+                        <time datetime={programme.start.toISOString()}>{formatTime(programme.start)}</time>
+                        <div class="programme-detail">
+                          <div class="programme-heading">
+                            <h2>{programme.title}</h2>
+                            <span>{formatTime(programme.start)} - {formatTime(programme.stop)} · {formatDuration(programme)}</span>
+                          </div>
+                          {#if programme.description}
+                            <p>{programme.description}</p>
+                          {/if}
+                          {#if isCurrent(programme)}
+                            <span class="badge live-badge">En emisión ahora</span>
+                          {/if}
                         </div>
-                        {#if programme.description}
-                          <p>{programme.description}</p>
-                        {/if}
-                        {#if isCurrent(programme)}
-                          <span class="badge live-badge">En emisión ahora</span>
-                        {/if}
-                      </div>
-                    </li>
-                  {/each}
-                </ol>
+                      </li>
+                    {/each}
+                  </ol>
+                </div>
               {:else}
                 <div class="empty-schedule">
                   <strong>No hay programación para este canal.</strong>
