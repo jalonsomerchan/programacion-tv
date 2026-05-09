@@ -35,12 +35,16 @@ jobs:
 
       - name: Download Spain EPG
         run: |
+          set -euo pipefail
           mkdir -p public/data
-          curl --fail --location --retry 3 --retry-delay 5 --compressed \
-            --output public/data/spain4.xml \
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output /tmp/spain4.xml.gz \
             https://www.open-epg.com/files/spain4.xml.gz
+          gzip -dc /tmp/spain4.xml.gz > public/data/spain4.xml
           test -s public/data/spain4.xml
           grep -q '<tv' public/data/spain4.xml
+          grep -q '<programme' public/data/spain4.xml
+          rm /tmp/spain4.xml.gz
 
       - name: Check project
         run: npm run check
