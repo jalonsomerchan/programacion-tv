@@ -13,6 +13,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  EPG_URL: https://www.open-epg.com/files/spain4.xml.gz
+
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -39,38 +42,21 @@ jobs:
           mkdir -p public/data
           curl --fail --location --retry 3 --retry-delay 5 \
             --output /tmp/spain4.xml.gz \
-            https://www.open-epg.com/files/spain4.xml.gz
+            "$EPG_URL"
           gzip -dc /tmp/spain4.xml.gz > public/data/spain4.xml
-          python - <<'PY'
-          import re
-          from datetime import datetime
-          from zoneinfo import ZoneInfo
-
-          path = 'public/data/spain4.xml'
-          madrid = ZoneInfo('Europe/Madrid')
-
-          def fix_offset(match):
-              prefix = match.group(1)
-              raw_date = match.group(2)
-              dt = datetime.strptime(raw_date, '%Y%m%d%H%M%S').replace(tzinfo=madrid)
-              offset = dt.strftime('%z')
-              return f'{prefix}{raw_date} {offset}'
-
-          with open(path, 'r', encoding='utf-8') as file:
-              xml = file.read()
-
-          xml = re.sub(r'((?:start|stop)=")([0-9]{14})\s+[+-][0-9]{4}', fix_offset, xml)
-
-          with open(path, 'w', encoding='utf-8') as file:
-              file.write(xml)
-          PY
           test -s public/data/spain4.xml
           grep -q '<tv' public/data/spain4.xml
           grep -q '<programme' public/data/spain4.xml
           rm /tmp/spain4.xml.gz
 
+      - name: Build guide JSON
+        run: npm run build:guide
+
       - name: Check project
         run: npm run check
+
+      - name: Test project
+        run: npm test
 
       - name: Build
         run: npm run build
