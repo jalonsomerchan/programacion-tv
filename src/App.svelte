@@ -46,11 +46,16 @@
     night: 'Madrugada',
   }
 
+  const timeSlotEntries = Object.entries(slotLabels) as [TimeSlot, string][]
+
   let channels: Channel[] = []
   let programmes: Programme[] = []
   let metadata: GuideMetadata | null = null
   let visibleChannelIds: string[] = []
   let hiddenChannelIds: string[] = []
+  let focusedChannelId = ''
+  let requestedChannelSlug = ''
+  let shareMessage = ''
   let channelSearch = ''
   let searchQuery = ''
   let now = new Date()
@@ -66,13 +71,15 @@
   let openerButton: HTMLElement | null = null
 
   $: channelMap = new Map(channels.map((channel) => [channel.id, channel]))
+  $: focusedChannel = focusedChannelId ? channelMap.get(focusedChannelId) : undefined
   $: availableDays = getAvailableDays(programmes)
   $: selectedProgrammes = filterProgrammesByTimeSlot(filterProgrammesByDay(programmes, selectedDay), selectedSlot, now)
   $: programmesByChannel = groupProgrammes(selectedProgrammes)
   $: visibleChannels = visibleChannelIds
     .map((channelId) => channelMap.get(channelId))
     .filter((channel): channel is Channel => Boolean(channel))
-  $: rows = buildRows(visibleChannels, programmesByChannel, now)
+  $: activeChannels = focusedChannel ? [focusedChannel] : visibleChannels
+  $: rows = buildRows(activeChannels, programmesByChannel, now)
   $: displayedRows = filterRows(rows, searchQuery)
   $: filteredChannels = getFilteredChannels(channels, channelSearch)
   $: selectedCount = visibleChannelIds.length
@@ -82,11 +89,17 @@
     setupTheme()
     loadGuide()
 
+    const handlePopState = () => applyChannelFromUrl(channels)
+    window.addEventListener('popstate', handlePopState)
+
     const interval = window.setInterval(() => {
       now = new Date()
     }, 60_000)
 
-    return () => window.clearInterval(interval)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('popstate', handlePopState)
+    }
   })
 
   function setupTheme() {
@@ -117,6 +130,7 @@
       visibleChannelIds = initialSettings.visibleIds
       hiddenChannelIds = initialSettings.hiddenIds
       selectedDay = getInitialDay(parsedProgrammes)
+      applyChannelFromUrl(guide.channels)
     } catch (error) {
       errorMessage = error instanceof Error ? error.message : 'No se ha podido cargar la programación.'
     } finally {
@@ -170,6 +184,51 @@
     const visibleIds = getDefaultChannelIds(parsedChannels)
     const hiddenIds = parsedChannels.map((channel) => channel.id).filter((id) => !visibleIds.includes(id))
     return { visibleIds, hiddenIds }
+  }
+
+  function applyChannelFromUrl(channelList: Channel[]) {
+    const params = new URLSearchParams(window.location.search)
+    const slug = params.get('canal') || ''
+    requestedChannelSlug = slug
+    shareMessage = ''
+
+    if (!slug) {
+      focusedChannelId = ''
+      return
+    }
+
+    const channel = channelList.find((item) => item.slug === slug)
+    focusedChannelId = channel?.id || ''
+  }
+
+  function setChannelUrl(channel: Channel | null) {
+    const url = new URL(window.location.href)
+
+    if (channel) {
+      url.searchParams.set('canal', channel.slug)
+    } else {
+      url.searchParams.delete('canal')
+    }
+
+    window.history.pushState({}, '', url)
+    applyChannelFromUrl(channels)
+  }
+
+  function getChannelUrl(channel: Channel) {
+    const url = new URL(window.location.href)
+    url.searchParams.set('canal', channel.slug)
+    return url.toString()
+  }
+
+  async function copyChannelUrl(channel: Channel) {
+    const url = getChannelUrl(channel)
+
+    try {
+      await navigator.clipboard.writeText(url)
+      shareMessage = `Enlace de ${channel.name} copiado.`
+    } catch {
+      shareMessage = url
+    }
   }
 
   function saveSettings(nextVisibleIds = visibleChannelIds, nextHiddenIds = hiddenChannelIds) {
@@ -449,6 +508,26 @@
       </div>
     </section>
 
+    {#if focusedChannel}
+      <section class="focus-banner card" aria-label="Canal seleccionado">
+        <div>
+          <strong>Viendo solo {focusedChannel.name}</strong>
+          <span>URL compartible activa para este canal.</span>
+        </div>
+        <button class="btn btn-secondary" type="button" on:click={() => setChannelUrl(null)}>Ver todos</button>
+      </section>
+    {:else if requestedChannelSlug && !loading}
+      <section class="alert alert-danger" role="alert">
+        <h1>Canal no encontrado</h1>
+        <p>No existe ningún canal con la URL <strong>{requestedChannelSlug}</strong>. Puedes volver al listado completo.</p>
+        <button class="btn btn-secondary" type="button" on:click={() => setChannelUrl(null)}>Ver todos los canales</button>
+      </section>
+    {/if}
+
+    {#if shareMessage}
+      <section class="import-message" role="status">{shareMessage}</section>
+    {/if}
+
     {#if availableDays.length}
       <section class="filters card" aria-label="Filtros de programación">
         <div class="filter-group" aria-label="Día de programación">
@@ -460,8 +539,8 @@
         </div>
 
         <div class="filter-group" aria-label="Franja horaria">
-          {#each Object.entries(slotLabels) as [slot, label]}
-            <button class:active={selectedSlot === slot} class="filter-chip" type="button" on:click={() => (selectedSlot = slot as TimeSlot)}>
+          {#each timeSlotEntries as [slot, label]}
+            <button class:active={selectedSlot === slot} class="filter-chip" type="button" on:click={() => (selectedSlot = slot)}>
               {label}
             </button>
           {/each}
@@ -594,7 +673,7 @@
     {:else}
       <section class="channel-list" aria-label="Programación completa por cadenas">
         {#each displayedRows as row (row.channel.id)}
-          <details class="channel-card card" on:toggle={(event) => handleDetailsToggle(event, row)}>
+          <details class="channel-card card" open={focusedChannelId === row.channel.id} on:toggle={(event) => handleDetailsToggle(event, row)}>
             <summary class="channel-summary">
               <span class="channel-title-block">
                 <span class="channel-logo" aria-hidden="true">{row.channel.name.slice(0, 2).toUpperCase()}</span>
@@ -631,6 +710,15 @@
             {/if}
 
             <div class="full-schedule">
+              <div class="channel-actions">
+                <button class="btn btn-secondary" type="button" on:click={() => setChannelUrl(row.channel)}>
+                  Ver solo este canal
+                </button>
+                <button class="btn btn-ghost" type="button" on:click={() => copyChannelUrl(row.channel)}>
+                  Copiar enlace
+                </button>
+              </div>
+
               {#if row.schedule.length}
                 <div class="schedule-scroll" tabindex="0">
                   <ol class="programme-list">
