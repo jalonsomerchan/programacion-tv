@@ -112,18 +112,25 @@ export function uniqueIds(ids: string[], validIds: string[]) {
   return Array.from(new Set(ids)).filter((id) => validIds.includes(id))
 }
 
+function findDefaultChannel(parsedChannels: Channel[], aliases: string[]) {
+  const aliasSet = aliases.map(normalize)
+
+  return (
+    parsedChannels.find((channel) => aliasSet.includes(channel.normalized) || aliasSet.includes(normalize(channel.id))) ||
+    parsedChannels.find((channel) => {
+      const normalizedId = normalize(channel.id)
+      return aliasSet.some((alias) => {
+        const hdAlias = `${alias}hd`
+        const uhdAlias = `${alias}uhd`
+        return channel.normalized === hdAlias || normalizedId === hdAlias || channel.normalized === uhdAlias || normalizedId === uhdAlias
+      })
+    })
+  )
+}
+
 export function getDefaultChannelIds(parsedChannels: Channel[]) {
   const ids = defaultChannels
-    .map((defaultChannel) => {
-      const aliasSet = defaultChannel.aliases.map(normalize)
-
-      return parsedChannels.find((channel) => {
-        const normalizedId = normalize(channel.id)
-        return aliasSet.some(
-          (alias) => channel.normalized === alias || normalizedId === alias || channel.normalized.includes(alias) || normalizedId.includes(alias),
-        )
-      })?.id
-    })
+    .map((defaultChannel) => findDefaultChannel(parsedChannels, defaultChannel.aliases)?.id)
     .filter((id): id is string => Boolean(id))
 
   return Array.from(new Set(ids))
