@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 env:
-  EPG_URL: https://www.open-epg.com/files/spain4.xml.gz
+  EPG_URL: https://www.open-epg.com/files/spain2.xml
   DEPLOYED_GUIDE_URL: https://jalonsomerchan.github.io/programacion-tv/data/guide.json
 
 concurrency:
@@ -44,13 +44,11 @@ jobs:
           set -euo pipefail
           mkdir -p public/data
           curl --fail --location --retry 3 --retry-delay 5 \
-            --output /tmp/spain4.xml.gz \
+            --output public/data/spain2.xml \
             "$EPG_URL"
-          gzip -dc /tmp/spain4.xml.gz > public/data/spain4.xml
-          test -s public/data/spain4.xml
-          grep -q '<tv' public/data/spain4.xml
-          grep -q '<programme' public/data/spain4.xml
-          rm /tmp/spain4.xml.gz
+          test -s public/data/spain2.xml
+          grep -q '<tv' public/data/spain2.xml
+          grep -q '<programme' public/data/spain2.xml
 
       - name: Build guide JSON
         if: steps.epg.outcome == 'success'
