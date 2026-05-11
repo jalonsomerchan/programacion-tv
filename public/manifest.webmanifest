@@ -1,0 +1,22 @@
+{
+  "name": "Programación TV España",
+  "short_name": "Programación TV",
+  "description": "Consulta la programación de televisión en España por canales, días y franjas horarias.",
+  "id": "/programacion-tv/",
+  "start_url": "/programacion-tv/",
+  "scope": "/programacion-tv/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "orientation": "portrait-primary",
+  "lang": "es-ES",
+  "categories": ["entertainment", "news", "utilities"],
+  "icons": [
+    {
+      "src": "pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
