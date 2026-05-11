@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "build:guide": "node scripts/build-guide.mjs public/data/spain2.xml public/data/guide.json",
+    "build:guide": "node scripts/build-guide.mjs public/data/spain4.xml public/data/guide.json",
     "test": "node --test scripts/*.test.mjs"
   },
   "devDependencies": {
