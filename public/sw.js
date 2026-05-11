@@ -19,6 +19,11 @@ function withCacheHeader(response) {
   })
 }
 
+async function notifyClients(message) {
+  const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
+  clients.forEach((client) => client.postMessage(message))
+}
+
 async function cacheAppShell() {
   const cache = await caches.open(APP_CACHE)
   await cache.addAll(APP_SHELL)
@@ -64,6 +69,7 @@ async function fetchGuide(request) {
 
     if (networkResponse.ok) {
       await cache.put(request, networkResponse.clone())
+      notifyClients({ type: 'GUIDE_NETWORK_OK' })
     }
 
     return networkResponse
@@ -71,9 +77,11 @@ async function fetchGuide(request) {
     const cachedResponse = await cache.match(request)
 
     if (cachedResponse) {
+      notifyClients({ type: 'GUIDE_CACHE_USED' })
       return withCacheHeader(cachedResponse)
     }
 
+    notifyClients({ type: 'GUIDE_CACHE_MISSING' })
     throw new Error('No hay una guía cacheada disponible.')
   }
 }
