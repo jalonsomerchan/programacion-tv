@@ -13,6 +13,8 @@ La guía se actualiza automáticamente desde Open-EPG, se convierte a un JSON li
 - Exportación e importación de la configuración en JSON.
 - Filtros por día y franja horaria: ahora, mañana, tarde, prime time y madrugada.
 - Tema claro/oscuro persistente.
+- Instalación como PWA con manifest y service worker.
+- Caché de la app y de la última guía válida para poder consultarla sin conexión.
 - Metadatos SEO, sitemap, robots.txt y datos estructurados.
 
 ## Requisitos
@@ -75,11 +77,24 @@ Pasos principales:
 
 Si Open-EPG falla temporalmente, el workflow intenta reutilizar la última guía publicada en GitHub Pages. En ese caso marca `metadata.fallbackUsed` dentro de `guide.json`.
 
+## PWA y modo sin conexión
+
+La aplicación incluye `public/manifest.webmanifest` y `public/sw.js` para poder instalarse como aplicación web progresiva.
+
+El service worker aplica estas reglas:
+
+- cachea la carcasa básica de la app durante la instalación;
+- cachea recursos estáticos del mismo origen a medida que se visitan;
+- intenta descargar `data/guide.json` desde red y guarda la última respuesta válida;
+- si la red falla, devuelve la última guía cacheada y avisa a la interfaz para mostrar un mensaje de datos guardados/offline.
+
+La primera visita necesita conexión para guardar una guía válida. Después, la app puede abrirse sin conexión con la última programación disponible.
+
 ## Estructura principal
 
 ```text
 .github/workflows/deploy.yml  # actualización de EPG y despliegue
-public/                       # assets públicos, robots, sitemap y datos generados
+public/                       # assets públicos, PWA, robots, sitemap y datos generados
 scripts/build-guide.mjs        # conversor XMLTV -> JSON
 scripts/*.test.mjs             # tests básicos sin dependencias extra
 src/App.svelte                 # interfaz principal
@@ -108,6 +123,10 @@ Comprueba el offset de las fechas en el XML original. El parser interpreta el in
 
 El workflow tiene reintentos y fallback a la última guía publicada. Si no existe una guía válida previa, el despliegue fallará para evitar publicar una app sin datos.
 
+### La PWA no muestra datos sin conexión
+
+Abre la web una vez con conexión y espera a que cargue correctamente la guía. El service worker solo puede reutilizar `data/guide.json` después de haber guardado una respuesta válida.
+
 ## SEO
 
 La aplicación incluye:
@@ -117,8 +136,9 @@ La aplicación incluye:
 - `public/robots.txt`.
 - `public/sitemap.xml`.
 - JSON-LD de tipo `WebApplication`.
+- Manifest PWA enlazado desde `index.html`.
 
-Si se cambia la URL pública, actualiza `index.html`, `public/robots.txt`, `public/sitemap.xml` y la variable `DEPLOYED_GUIDE_URL` del workflow.
+Si se cambia la URL pública, actualiza `index.html`, `public/robots.txt`, `public/sitemap.xml`, `public/manifest.webmanifest` y la variable `DEPLOYED_GUIDE_URL` del workflow.
 
 ## Atribución
 
