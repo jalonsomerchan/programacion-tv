@@ -1,8 +1,16 @@
-const VERSION = 'programacion-tv-v1'
+const VERSION = 'programacion-tv-v2'
 const APP_CACHE = `${VERSION}-app`
 const GUIDE_CACHE = `${VERSION}-guide`
 const GUIDE_PATH = '/data/guide.json'
-const APP_SHELL = ['./', './manifest.webmanifest', './favicon.svg', './pwa-icon.svg']
+const APP_SHELL = [
+  './',
+  './manifest.webmanifest',
+  './favicon.svg',
+  './pwa-icon.svg',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
+]
 
 function isGuideRequest(request) {
   const url = new URL(request.url)

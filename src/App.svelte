@@ -109,8 +109,8 @@
     document.documentElement.dataset.theme = theme
   }
 
-  function toggleTheme() {
-    theme = theme === 'dark' ? 'light' : 'dark'
+  function setTheme(nextTheme: Theme) {
+    theme = nextTheme
     document.documentElement.dataset.theme = theme
     window.localStorage.setItem(THEME_KEY, theme)
   }
@@ -333,6 +333,12 @@
     }
   }
 
+  function handleBackdropClick(event: MouseEvent) {
+    if (event.target === event.currentTarget) {
+      closeSettings()
+    }
+  }
+
   function resetChannels() {
     const defaultIds = getDefaultChannelIds(channels)
     saveSettings(defaultIds, channels.map((channel) => channel.id).filter((id) => !defaultIds.includes(id)))
@@ -475,11 +481,18 @@
       </a>
 
       <div class="topbar-actions">
-        <button class="btn btn-secondary" type="button" on:click={openSettings}>
-          Opciones ({selectedCount})
-        </button>
-        <button class="btn btn-ghost" type="button" on:click={toggleTheme}>
-          {theme === 'dark' ? 'Claro' : 'Oscuro'}
+        <button
+          class="menu-button"
+          type="button"
+          on:click={openSettings}
+          aria-haspopup="dialog"
+          aria-expanded={settingsOpen}
+          aria-controls="settings-title"
+        >
+          <span class="sr-only">Abrir menú</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
         </button>
       </div>
     </nav>
@@ -490,10 +503,8 @@
       <div class="now-block">
         <span class="status-dot" class:loading-dot={loading}></span>
         <div>
-          <strong>Ahora son las {formatTime(now)}</strong>
-          <span>
-            {guideGeneratedAt ? `Guía generada: ${formatDate(guideGeneratedAt)} a las ${formatTime(guideGeneratedAt)}` : 'Cargando la guía'}
-          </span>
+          <strong>{loading ? 'Actualizando guía' : 'Programación en directo'}</strong>
+          <span>{guideGeneratedAt ? `${metadata?.channelCount || 0} canales disponibles` : 'Cargando la guía'}</span>
         </div>
       </div>
 
@@ -549,24 +560,50 @@
     {/if}
 
     {#if settingsOpen}
-      <div class="modal-backdrop" role="presentation" on:click={closeSettings} on:keydown={handleModalKeydown}>
-        <section
+      <div class="modal-backdrop" role="presentation" on:click={handleBackdropClick} on:keydown={handleModalKeydown}>
+        <div
           bind:this={settingsModal}
           class="settings-modal card"
           role="dialog"
           aria-modal="true"
           aria-labelledby="settings-title"
           tabindex="-1"
-          on:click|stopPropagation
         >
           <div class="settings-header">
             <div>
-              <p class="eyebrow">Opciones</p>
-              <h1 id="settings-title">Canales y configuración</h1>
+              <p class="eyebrow">Menú</p>
+              <h1 id="settings-title">Opciones</h1>
               <p>Arrastra los canales visibles o usa los botones de subir y bajar. Los cambios se guardan automáticamente.</p>
             </div>
-            <button class="btn btn-ghost" type="button" on:click={closeSettings}>Cerrar</button>
+            <button class="menu-close" type="button" on:click={closeSettings}>
+              <span class="sr-only">Volver a la programación</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m6 6 12 12M18 6 6 18" />
+              </svg>
+            </button>
           </div>
+
+          <section class="theme-panel" aria-labelledby="theme-title">
+            <div>
+              <h2 id="theme-title">Apariencia</h2>
+              <p>Elige cómo quieres ver la guía.</p>
+            </div>
+            <div class="theme-toggle" role="group" aria-label="Cambiar tema">
+              <button class:active={theme === 'light'} type="button" on:click={() => setTheme('light')} aria-pressed={theme === 'light'}>
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M12 4V2M12 22v-2M4.93 4.93 3.52 3.52M20.48 20.48l-1.41-1.41M4 12H2M22 12h-2M4.93 19.07l-1.41 1.41M20.48 3.52l-1.41 1.41" />
+                  <circle cx="12" cy="12" r="4" />
+                </svg>
+                <span>Claro</span>
+              </button>
+              <button class:active={theme === 'dark'} type="button" on:click={() => setTheme('dark')} aria-pressed={theme === 'dark'}>
+                <svg aria-hidden="true" viewBox="0 0 24 24">
+                  <path d="M21 14.6A8 8 0 0 1 9.4 3 7 7 0 1 0 21 14.6Z" />
+                </svg>
+                <span>Oscuro</span>
+              </button>
+            </div>
+          </section>
 
           <div class="settings-tools">
             <button class="btn btn-secondary" type="button" on:click={resetChannels}>Orden recomendado</button>
@@ -647,7 +684,7 @@
               </div>
             </section>
           </div>
-        </section>
+        </div>
       </div>
     {/if}
 
@@ -720,7 +757,7 @@
               </div>
 
               {#if row.schedule.length}
-                <div class="schedule-scroll" tabindex="0">
+                <div class="schedule-scroll" role="region" aria-label={`Programación de ${row.channel.name}`}>
                   <ol class="programme-list">
                     {#each row.schedule as programme (programme.channelId + programme.startMs)}
                       <li class:current-item={isCurrent(programme)} class:past-item={isPast(programme)}>
