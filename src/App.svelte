@@ -499,15 +499,7 @@
   </header>
 
   <main id="programacion">
-    <section class="control-bar" aria-label="Estado de la guía">
-      <div class="now-block">
-        <span class="status-dot" class:loading-dot={loading}></span>
-        <div>
-          <strong>{loading ? 'Actualizando guía' : 'Programación en directo'}</strong>
-          <span>{guideGeneratedAt ? `${metadata?.channelCount || 0} canales disponibles` : 'Cargando la guía'}</span>
-        </div>
-      </div>
-
+    <section class="control-bar" aria-label="Buscar y actualizar la guía">
       <div class="control-actions">
         <label class="minimal-search" for="guide-search">
           <span class="sr-only">Buscar en la guía</span>
